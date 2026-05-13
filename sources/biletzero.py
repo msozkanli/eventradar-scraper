@@ -90,33 +90,47 @@ class BiletzeroSource(EventSource):
             # Try various selectors for event cards
             raw_items = []
 
-            # Try to find event links
+            # Try to find event links — detail pages have 6+ path segments
             links = await page.query_selector_all('a[href*="/tr/etkinlikler/"]')
             seen_urls = set()
             for link in links:
                 href = await link.get_attribute('href')
                 if not href:
                     continue
-                # Must be a detail page (has 4+ path segments)
+                # Must be a detail page (has 6+ path segments: /tr/etkinlikler/category/slug/city/session)
                 path = href.split('?')[0].rstrip('/')
                 parts = path.split('/')
-                if len(parts) < 5:
+                if len(parts) < 6:
                     continue
                 full_url = href if href.startswith('http') else BASE_URL + href
                 if full_url in seen_urls:
                     continue
                 seen_urls.add(full_url)
 
-                # Get title text
-                title = (await link.inner_text()).strip()
-                if not title or len(title) < 3:
-                    # Try parent element for title
-                    parent = await link.query_selector('..')
-                    if parent:
-                        title = (await parent.inner_text()).strip()
-                        title = title.split('\n')[0].strip()
+                # biletzero link text format: "Mar 26, Perşembe\nKaraoke & Pong Night Takvimi"
+                raw_text = (await link.inner_text()).strip()
+                lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+                # Take the non-date line (second line usually)
+                non_date = [l for l in lines if not re.match(
+                    r'^(\d{1,2}\s+\w{3}|\w{3}\s+\d{1,2}|\d{1,2}\s+\w+\s*[-–])', l
+                ) and len(l) > 5]
+                title = non_date[0] if non_date else (lines[-1] if lines else '')
+                # Also try date from first line
+                date_lines = [l for l in lines if re.match(
+                    r'^(\d{1,2}\s+\w{3}|\w{3}\s+\d{1,2}|\d{1,2}\s+\w+\s*[-–])', l
+                )]
 
-                if not title or len(title) < 3:
+                title = title.strip()
+                # Clean up " Takvimi" suffix common on biletzero
+                title = re.sub(r'\s+(Etkinlik\s+)?Takvimi$', '', title, flags=re.IGNORECASE).strip()
+
+                if not title or len(title) < 5:
+                    continue
+                # Skip category header links
+                if title in CATEGORY_MAP.values() or title.lower() in CATEGORY_MAP:
+                    continue
+                # Skip if title looks like a date or city
+                if re.match(r'^(istanbul|ankara|izmir|bursa|antalya|\d{1,2}\s+\w{3})$', title.lower()):
                     continue
 
                 # Try to get date from nearby elements
